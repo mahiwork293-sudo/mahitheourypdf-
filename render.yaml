@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: telegram-pdf-renamer
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: PORT
+        value: 8080
