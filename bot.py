@@ -2,12 +2,16 @@ import os
 import re
 import asyncio
 from aiohttp import web
-from pyrogram import Client, filters, idle
-from pyrogram.types import Message
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
-# Configuration - Environment Variables
-API_ID = int(os.environ.get("API_ID", "0"))
-API_HASH = os.environ.get("API_HASH", "")
+# Configuration - Sirf BOT_TOKEN chahiye
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 PORT = int(os.environ.get("PORT", "8080"))
 
@@ -17,16 +21,8 @@ THUMBNAIL_DIR = "thumbnails"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(THUMBNAIL_DIR, exist_ok=True)
 
-# User state storage: {user_id: {"step": "waiting_name", "message": message}}
+# User state storage: {user_id: {"file_id": ..., "file_name": ...}}
 USER_STATE = {}
-
-# Initialize Pyrogram Bot Client
-bot = Client(
-    "pdf_renamer_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
 
 
 def sanitize_filename(filename: str) -> str:
@@ -36,7 +32,6 @@ def sanitize_filename(filename: str) -> str:
         filename += ".pdf"
     # Replace characters not allowed in filenames
     clean_name = re.sub(r'[\\/*?:"<>|]', '_', filename)
-    # Replace consecutive spaces or underscores with single underscore
     clean_name = re.sub(r'[\s_]+', '_', clean_name)
     return clean_name
 
@@ -58,13 +53,13 @@ async def start_web_server():
 
 
 # --- Command Handlers ---
-@bot.on_message(filters.command(["start", "help"]) & filters.private)
-async def start_handler(client: Client, message: Message):
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     welcome_text = (
-        f"👋 **Namaste {message.from_user.first_name}!**\n\n"
+        f"👋 **Namaste {user.first_name}!**\n\n"
         "Main ek **PDF Renamer & Custom Thumbnail Bot** hoon.\n\n"
         "📌 **Kaise use karein:**\n"
-        "1. Sabse pehle koi bhi **Photo** bhejein jo aap PDF ka cover/thumbnail banana chahte hain.\n"
+        "1. Sabse pehle koi bhi **Photo** bhejein jo aap PDF ka thumbnail banana chahte hain.\n"
         "2. Fir apni **PDF file** bhejein.\n"
         "3. PDF ka naya naam type karke bhejein.\n\n"
         "✨ **Commands:**\n"
@@ -72,72 +67,70 @@ async def start_handler(client: Client, message: Message):
         "• `/viewthumb` - Current thumbnail dekhne ke liye\n"
         "• `/cancel` - Ongoing process cancel karne ke liye"
     )
-    await message.reply_text(welcome_text)
+    await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
 
-@bot.on_message(filters.command("cancel") & filters.private)
-async def cancel_handler(client: Client, message: Message):
-    user_id = message.from_user.id
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     if user_id in USER_STATE:
         del USER_STATE[user_id]
-        await message.reply_text("❌ Process cancel kar diya gaya hai.")
+        await update.message.reply_text("❌ Process cancel kar diya gaya hai.")
     else:
-        await message.reply_text("Koi active process nahi chal raha hai.")
+        await update.message.reply_text("Koi active process nahi chal raha hai.")
 
 
-@bot.on_message(filters.command("delthumb") & filters.private)
-async def delthumb_handler(client: Client, message: Message):
-    user_id = message.from_user.id
+async def delthumb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     thumb_path = os.path.join(THUMBNAIL_DIR, f"{user_id}.jpg")
     if os.path.exists(thumb_path):
         os.remove(thumb_path)
-        await message.reply_text("🗑️ Aapka custom thumbnail delete kar diya gaya hai!")
+        await update.message.reply_text("🗑️ Aapka custom thumbnail delete kar diya gaya hai!")
     else:
-        await message.reply_text("Aapne abhi tak koi custom thumbnail set nahi kiya hai.")
+        await update.message.reply_text("Aapne abhi tak koi custom thumbnail set nahi kiya hai.")
 
 
-@bot.on_message(filters.command("viewthumb") & filters.private)
-async def viewthumb_handler(client: Client, message: Message):
-    user_id = message.from_user.id
+async def viewthumb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     thumb_path = os.path.join(THUMBNAIL_DIR, f"{user_id}.jpg")
     if os.path.exists(thumb_path):
-        await message.reply_photo(photo=thumb_path, caption="Yeh aapka current saved thumbnail hai.")
+        with open(thumb_path, "rb") as photo:
+            await update.message.reply_photo(photo=photo, caption="Yeh aapka current saved thumbnail hai.")
     else:
-        await message.reply_text("Aapne abhi tak koi custom thumbnail set nahi kiya hai.")
+        await update.message.reply_text("Aapne abhi tak koi custom thumbnail set nahi kiya hai.")
 
 
-# --- Photo Handler (Thumbnail) ---
-@bot.on_message(filters.photo & filters.private)
-async def save_thumbnail(client: Client, message: Message):
-    user_id = message.from_user.id
+# --- Photo Handler (Thumbnail Save) ---
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     thumb_path = os.path.join(THUMBNAIL_DIR, f"{user_id}.jpg")
 
-    wait_msg = await message.reply_text("⏳ Saving thumbnail...")
+    wait_msg = await update.message.reply_text("⏳ Saving thumbnail...")
     try:
-        await client.download_media(message, file_name=thumb_path)
+        photo_file = await update.message.photo[-1].get_file()
+        await photo_file.download_to_drive(thumb_path)
         await wait_msg.edit_text(
             "✅ **Custom Thumbnail Saved!**\n\n"
-            "Ab jab aap PDF bhejenge, yahi photo preview me dikhai degi."
+            "Ab jab aap PDF bhejenge, yahi photo preview me dikhai degi.",
+            parse_mode="Markdown"
         )
     except Exception as e:
-        await wait_msg.edit_text(f"❌ Thumbnail save karne me error aaya: `{e}`")
+        await wait_msg.edit_text(f"❌ Thumbnail save karne me error: {e}")
 
 
 # --- Document Handler (PDF Receive) ---
-@bot.on_message(filters.document & filters.private)
-async def receive_pdf(client: Client, message: Message):
-    user_id = message.from_user.id
-    file_name = message.document.file_name or "document.pdf"
+async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    doc = update.message.document
+    file_name = doc.file_name or "document.pdf"
 
     if not file_name.lower().endswith(".pdf"):
-        await message.reply_text("⚠️ Kripya sirf **PDF** file bhejein.")
+        await update.message.reply_text("⚠️ Kripya sirf **PDF** file bhejein.", parse_mode="Markdown")
         return
 
-    # Store state
+    # User state save
     USER_STATE[user_id] = {
-        "step": "waiting_name",
-        "doc_message": message,
-        "original_filename": file_name
+        "file_id": doc.file_id,
+        "original_name": file_name
     }
 
     reply_text = (
@@ -146,86 +139,94 @@ async def receive_pdf(client: Client, message: Message):
         f"(Jaise: **Polity Notes** ya **Chapter 1.pdf**)\n\n"
         f"_Process cancel karne ke liye /cancel likhein._"
     )
-    await message.reply_text(reply_text)
+    await update.message.reply_text(reply_text, parse_mode="Markdown")
 
 
-# --- Text Handler (Receive New Name and Process) ---
-@bot.on_message(filters.text & filters.private & ~filters.command(["start", "help", "cancel", "delthumb", "viewthumb"]))
-async def process_rename(client: Client, message: Message):
-    user_id = message.from_user.id
+# --- Text Handler (Receive New Name & Rename) ---
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
-    if user_id not in USER_STATE or USER_STATE[user_id].get("step") != "waiting_name":
-        await message.reply_text("Pehle koi PDF file bhejein jise rename karna ho.")
+    if user_id not in USER_STATE:
+        await update.message.reply_text("Pehle koi PDF file bhejein jise rename karna ho.")
         return
 
-    doc_info = USER_STATE.pop(user_id)
-    doc_message = doc_info["doc_message"]
-    new_name_raw = message.text.strip()
+    state = USER_STATE.pop(user_id)
+    file_id = state["file_id"]
+    new_name_raw = update.message.text.strip()
     safe_filename = sanitize_filename(new_name_raw)
 
-    status_msg = await message.reply_text("⏳ **PDF download ho rahi hai... Kripya thoda intezar karein.**")
+    status_msg = await update.message.reply_text("⏳ **PDF download ho rahi hai... Kripya thoda intezar karein.**", parse_mode="Markdown")
 
-    temp_input_path = None
-    renamed_path = None
+    file_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{safe_filename}")
 
     try:
-        # Download PDF
-        temp_input_path = await client.download_media(
-            doc_message,
-            file_name=os.path.join(DOWNLOAD_DIR, f"{user_id}_{doc_message.id}.pdf")
-        )
+        # Download original PDF
+        tg_file = await context.bot.get_file(file_id)
+        await tg_file.download_to_drive(file_path)
 
-        await status_msg.edit_text("⚙️ **Thumbnail apply ho raha hai aur rename kiya ja raha hai...**")
+        await status_msg.edit_text("📤 **Renamed PDF upload ho rahi hai...**", parse_mode="Markdown")
 
-        # Rename file
-        renamed_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{safe_filename}")
-        if os.path.exists(renamed_path):
-            os.remove(renamed_path)
-        os.rename(temp_input_path, renamed_path)
-
-        # Check for custom thumbnail
+        # Custom thumbnail check
         thumb_path = os.path.join(THUMBNAIL_DIR, f"{user_id}.jpg")
-        thumb_to_send = thumb_path if os.path.exists(thumb_path) else None
+        thumb_file = open(thumb_path, "rb") if os.path.exists(thumb_path) else None
 
-        await status_msg.edit_text("📤 **Renamed PDF upload ho rahi hai...**")
-
-        # Send uploaded document with thumbnail & caption
         caption = f"📄 **{safe_filename}**\n\n⚡ _Processed by PDF Renamer Bot_"
-        await client.send_document(
-            chat_id=message.chat.id,
-            document=renamed_path,
-            file_name=safe_filename,
-            caption=caption,
-            thumb=thumb_to_send
-        )
+
+        with open(file_path, "rb") as doc_file:
+            await update.message.reply_document(
+                document=doc_file,
+                filename=safe_filename,
+                caption=caption,
+                thumbnail=thumb_file,
+                parse_mode="Markdown"
+            )
+
+        if thumb_file:
+            thumb_file.close()
 
         await status_msg.delete()
 
     except Exception as e:
-        await status_msg.edit_text(f"❌ Error aaya: `{e}`")
+        await status_msg.edit_text(f"❌ Error aaya: {e}")
 
     finally:
-        # Clean up temporary downloaded files
-        for path in [temp_input_path, renamed_path]:
-            if path and os.path.exists(path):
-                try:
-                    os.remove(path)
-                except Exception:
-                    pass
+        # Cleanup temporary downloaded PDF
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
 
 
-# --- Main entry point ---
 async def main():
-    print("[*] Starting Web Server for Render Free Tier...")
+    if not BOT_TOKEN:
+        print("[!] ERROR: BOT_TOKEN environment variable set nahi hai!")
+        return
+
+    # Start health check server for Render free tier
     await start_web_server()
 
-    print("[*] Starting Telegram Client...")
-    await bot.start()
-    print("[✓] Bot is up and running successfully!")
+    # Create telegram application
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    await idle()
-    await bot.stop()
+    # Handlers register karein
+    application.add_handler(CommandHandler(["start", "help"], start_command))
+    application.add_handler(CommandHandler("cancel", cancel_command))
+    application.add_handler(CommandHandler("delthumb", delthumb_command))
+    application.add_handler(CommandHandler("viewthumb", viewthumb_command))
+    application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    application.add_handler(MessageHandler(filters.Document.ALL, document_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+
+    # Start polling
+    print("[✓] Bot is up and running successfully with ONLY BOT_TOKEN!")
+    async with application:
+        await application.start()
+        await application.updater.start_polling()
+        # Keep running
+        while True:
+            await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())
