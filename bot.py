@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 from aiohttp import web
+from PIL import Image
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -32,8 +33,29 @@ def sanitize_filename(filename: str) -> str:
         filename += ".pdf"
     # Replace characters not allowed in filenames
     clean_name = re.sub(r'[\\/*?:"<>|]', '_', filename)
-    clean_name = re.sub(r'[\s_]+', '_', clean_name)
+    # Replace multiple spaces with single space
+    clean_name = re.sub(r'\s+', ' ', clean_name)
     return clean_name
+
+
+def process_thumbnail(image_path: str):
+    """
+    Telegram Bot API Rules for Document Thumbnail:
+    1. Format: JPEG
+    2. Dimensions: Max 320x320 pixels (width & height must NOT exceed 320)
+    3. Size: Must be strictly under 200 KB
+    Agar yeh rule follow na ho, toh Telegram thumbnail ko silently ignore kar deta hai!
+    """
+    try:
+        with Image.open(image_path) as img:
+            img = img.convert("RGB")
+            # Max 320x320 me resize karein aspect ratio maintain karte hue
+            img.thumbnail((320, 320), Image.Resampling.LANCZOS)
+            img.save(image_path, "JPEG", quality=85, optimize=True)
+        return True
+    except Exception as e:
+        print(f"[!] Thumbnail processing error: {e}")
+        return False
 
 
 # --- Render Health Check Web Server ---
@@ -94,25 +116,31 @@ async def viewthumb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thumb_path = os.path.join(THUMBNAIL_DIR, f"{user_id}.jpg")
     if os.path.exists(thumb_path):
         with open(thumb_path, "rb") as photo:
-            await update.message.reply_photo(photo=photo, caption="Yeh aapka current saved thumbnail hai.")
+            await update.message.reply_photo(photo=photo, caption="Yeh aapka current saved thumbnail hai (Telegram standard 320x320 format me).")
     else:
         await update.message.reply_text("Aapne abhi tak koi custom thumbnail set nahi kiya hai.")
 
 
-# --- Photo Handler (Thumbnail Save) ---
+# --- Photo Handler (Thumbnail Save & Resize) ---
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     thumb_path = os.path.join(THUMBNAIL_DIR, f"{user_id}.jpg")
 
-    wait_msg = await update.message.reply_text("⏳ Saving thumbnail...")
+    wait_msg = await update.message.reply_text("⏳ Saving & processing thumbnail...")
     try:
         photo_file = await update.message.photo[-1].get_file()
         await photo_file.download_to_drive(thumb_path)
-        await wait_msg.edit_text(
-            "✅ **Custom Thumbnail Saved!**\n\n"
-            "Ab jab aap PDF bhejenge, yahi photo preview me dikhai degi.",
-            parse_mode="Markdown"
-        )
+
+        # Telegram rule: resize to max 320x320 and convert to JPEG
+        success = process_thumbnail(thumb_path)
+        if success:
+            await wait_msg.edit_text(
+                "✅ **Custom Thumbnail Saved!**\n\n"
+                "Ab jab aap PDF bhejenge, yahi photo preview me dikhai degi.",
+                parse_mode="Markdown"
+            )
+        else:
+            await wait_msg.edit_text("⚠️ Photo save ho gayi par thumbnail format optimize karne me issue aaya.")
     except Exception as e:
         await wait_msg.edit_text(f"❌ Thumbnail save karne me error: {e}")
 
@@ -168,21 +196,25 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Custom thumbnail check
         thumb_path = os.path.join(THUMBNAIL_DIR, f"{user_id}.jpg")
-        thumb_file = open(thumb_path, "rb") if os.path.exists(thumb_path) else None
-
         caption = f"📄 **{safe_filename}**\n\n⚡ _Processed by PDF Renamer Bot_"
 
-        with open(file_path, "rb") as doc_file:
-            await update.message.reply_document(
-                document=doc_file,
-                filename=safe_filename,
-                caption=caption,
-                thumbnail=thumb_file,
-                parse_mode="Markdown"
-            )
-
-        if thumb_file:
-            thumb_file.close()
+        if os.path.exists(thumb_path):
+            with open(file_path, "rb") as doc_file, open(thumb_path, "rb") as thumb_file:
+                await update.message.reply_document(
+                    document=doc_file,
+                    filename=safe_filename,
+                    caption=caption,
+                    thumbnail=thumb_file,
+                    parse_mode="Markdown"
+                )
+        else:
+            with open(file_path, "rb") as doc_file:
+                await update.message.reply_document(
+                    document=doc_file,
+                    filename=safe_filename,
+                    caption=caption,
+                    parse_mode="Markdown"
+                )
 
         await status_msg.delete()
 
@@ -219,7 +251,7 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     # Start polling
-    print("[✓] Bot is up and running successfully with ONLY BOT_TOKEN!")
+    print("[✓] Bot is up and running successfully!")
     async with application:
         await application.start()
         await application.updater.start_polling()
