@@ -1,5 +1,6 @@
 import os
 import re
+import html
 import asyncio
 from aiohttp import web
 from PIL import Image
@@ -31,8 +32,8 @@ def sanitize_filename(filename: str) -> str:
     filename = filename.strip()
     if not filename.lower().endswith(".pdf"):
         filename += ".pdf"
-    # Replace characters not allowed in filenames
-    clean_name = re.sub(r'[\\/*?:"<>|]', '_', filename)
+    # Replace characters not allowed in filenames with '-'
+    clean_name = re.sub(r'[\\/*?:"<>|]', '-', filename)
     # Replace multiple spaces with single space
     clean_name = re.sub(r'\s+', ' ', clean_name)
     return clean_name
@@ -44,7 +45,6 @@ def process_thumbnail(image_path: str):
     1. Format: JPEG
     2. Dimensions: Max 320x320 pixels (width & height must NOT exceed 320)
     3. Size: Must be strictly under 200 KB
-    Agar yeh rule follow na ho, toh Telegram thumbnail ko silently ignore kar deta hai!
     """
     try:
         with Image.open(image_path) as img:
@@ -77,19 +77,20 @@ async def start_web_server():
 # --- Command Handlers ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    safe_name = html.escape(user.first_name or "User")
     welcome_text = (
-        f"👋 **Namaste {user.first_name}!**\n\n"
-        "Main ek **PDF Renamer & Custom Thumbnail Bot** hoon.\n\n"
-        "📌 **Kaise use karein:**\n"
-        "1. Sabse pehle koi bhi **Photo** bhejein jo aap PDF ka thumbnail banana chahte hain.\n"
-        "2. Fir apni **PDF file** bhejein.\n"
+        f"👋 <b>Namaste {safe_name}!</b>\n\n"
+        "Main ek <b>PDF Renamer & Custom Thumbnail Bot</b> hoon.\n\n"
+        "📌 <b>Kaise use karein:</b>\n"
+        "1. Sabse pehle koi bhi <b>Photo</b> bhejein jo aap PDF ka thumbnail banana chahte hain.\n"
+        "2. Fir apni <b>PDF file</b> bhejein.\n"
         "3. PDF ka naya naam type karke bhejein.\n\n"
-        "✨ **Commands:**\n"
-        "• `/delthumb` - Saved thumbnail delete karne ke liye\n"
-        "• `/viewthumb` - Current thumbnail dekhne ke liye\n"
-        "• `/cancel` - Ongoing process cancel karne ke liye"
+        "✨ <b>Commands:</b>\n"
+        "• <code>/delthumb</code> - Saved thumbnail delete karne ke liye\n"
+        "• <code>/viewthumb</code> - Current thumbnail dekhne ke liye\n"
+        "• <code>/cancel</code> - Ongoing process cancel karne ke liye"
     )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    await update.message.reply_text(welcome_text, parse_mode="HTML")
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -135,9 +136,9 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = process_thumbnail(thumb_path)
         if success:
             await wait_msg.edit_text(
-                "✅ **Custom Thumbnail Saved!**\n\n"
+                "✅ <b>Custom Thumbnail Saved!</b>\n\n"
                 "Ab jab aap PDF bhejenge, yahi photo preview me dikhai degi.",
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
         else:
             await wait_msg.edit_text("⚠️ Photo save ho gayi par thumbnail format optimize karne me issue aaya.")
@@ -152,7 +153,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = doc.file_name or "document.pdf"
 
     if not file_name.lower().endswith(".pdf"):
-        await update.message.reply_text("⚠️ Kripya sirf **PDF** file bhejein.", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Kripya sirf <b>PDF</b> file bhejein.", parse_mode="HTML")
         return
 
     # User state save
@@ -161,13 +162,14 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "original_name": file_name
     }
 
+    safe_orig_name = html.escape(file_name)
     reply_text = (
-        f"📩 **PDF Receive ho gayi!** (`{file_name}`)\n\n"
-        f"✍️ Kripya is PDF ka **NAYA NAAM** (Name) type karke bhejein:\n"
-        f"(Jaise: **Polity Notes** ya **Chapter 1.pdf**)\n\n"
-        f"_Process cancel karne ke liye /cancel likhein._"
+        f"📩 <b>PDF Receive ho gayi!</b> (<code>{safe_orig_name}</code>)\n\n"
+        f"✍️ Kripya is PDF ka <b>NAYA NAAM</b> (Name) type karke bhejein:\n"
+        f"(Jaise: <b>Polity Notes</b> ya <b>Chapter 1.pdf</b>)\n\n"
+        f"<i>Process cancel karne ke liye /cancel likhein.</i>"
     )
-    await update.message.reply_text(reply_text, parse_mode="Markdown")
+    await update.message.reply_text(reply_text, parse_mode="HTML")
 
 
 # --- Text Handler (Receive New Name & Rename) ---
@@ -183,7 +185,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_name_raw = update.message.text.strip()
     safe_filename = sanitize_filename(new_name_raw)
 
-    status_msg = await update.message.reply_text("⏳ **PDF download ho rahi hai... Kripya thoda intezar karein.**", parse_mode="Markdown")
+    status_msg = await update.message.reply_text("⏳ <b>PDF download ho rahi hai... Kripya thoda intezar karein.</b>", parse_mode="HTML")
 
     file_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{safe_filename}")
 
@@ -192,11 +194,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tg_file = await context.bot.get_file(file_id)
         await tg_file.download_to_drive(file_path)
 
-        await status_msg.edit_text("📤 **Renamed PDF upload ho rahi hai...**", parse_mode="Markdown")
+        await status_msg.edit_text("📤 <b>Renamed PDF upload ho rahi hai...</b>", parse_mode="HTML")
 
         # Custom thumbnail check
         thumb_path = os.path.join(THUMBNAIL_DIR, f"{user_id}.jpg")
-        caption = f"📄 **{safe_filename}**\n\n⚡ _Processed by PDF Renamer Bot_"
+        
+        # HTML safe caption
+        safe_display_name = html.escape(safe_filename)
+        caption = f"📄 <b>{safe_display_name}</b>\n\n⚡ <i>Processed by PDF Renamer Bot</i>"
 
         if os.path.exists(thumb_path):
             with open(file_path, "rb") as doc_file, open(thumb_path, "rb") as thumb_file:
@@ -205,7 +210,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     filename=safe_filename,
                     caption=caption,
                     thumbnail=thumb_file,
-                    parse_mode="Markdown"
+                    parse_mode="HTML"
                 )
         else:
             with open(file_path, "rb") as doc_file:
@@ -213,7 +218,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     document=doc_file,
                     filename=safe_filename,
                     caption=caption,
-                    parse_mode="Markdown"
+                    parse_mode="HTML"
                 )
 
         await status_msg.delete()
