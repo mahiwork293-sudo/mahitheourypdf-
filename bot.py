@@ -5,6 +5,7 @@ import asyncio
 from aiohttp import web
 from PIL import Image
 from telegram import Update
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -43,13 +44,12 @@ def process_thumbnail(image_path: str):
     """
     Telegram Bot API Rules for Document Thumbnail:
     1. Format: JPEG
-    2. Dimensions: Max 320x320 pixels (width & height must NOT exceed 320)
+    2. Dimensions: Max 320x320 pixels
     3. Size: Must be strictly under 200 KB
     """
     try:
         with Image.open(image_path) as img:
             img = img.convert("RGB")
-            # Max 320x320 me resize karein aspect ratio maintain karte hue
             img.thumbnail((320, 320), Image.Resampling.LANCZOS)
             img.save(image_path, "JPEG", quality=85, optimize=True)
         return True
@@ -132,7 +132,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_file = await update.message.photo[-1].get_file()
         await photo_file.download_to_drive(thumb_path)
 
-        # Telegram rule: resize to max 320x320 and convert to JPEG
         success = process_thumbnail(thumb_path)
         if success:
             await wait_msg.edit_text(
@@ -156,7 +155,6 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Kripya sirf <b>PDF</b> file bhejein.", parse_mode="HTML")
         return
 
-    # User state save
     USER_STATE[user_id] = {
         "file_id": doc.file_id,
         "original_name": file_name
@@ -190,19 +188,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_path = os.path.join(DOWNLOAD_DIR, f"{user_id}_{safe_filename}")
 
     try:
-        # Download original PDF
-        tg_file = await context.bot.get_file(file_id)
-        await tg_file.download_to_drive(file_path)
+        # Download original PDF (Timeout set to 120s)
+        tg_file = await context.bot.get_file(file_id, read_timeout=120, write_timeout=120)
+        await tg_file.download_to_drive(file_path, read_timeout=120, write_timeout=120)
 
         await status_msg.edit_text("📤 <b>Renamed PDF upload ho rahi hai...</b>", parse_mode="HTML")
 
         # Custom thumbnail check
         thumb_path = os.path.join(THUMBNAIL_DIR, f"{user_id}.jpg")
         
-        # HTML safe caption
         safe_display_name = html.escape(safe_filename)
         caption = f"📄 <b>{safe_display_name}</b>\n\n⚡ <i>Processed by PDF Renamer Bot</i>"
 
+        # Upload with 120s timeout so "Timed out" error never happens
         if os.path.exists(thumb_path):
             with open(file_path, "rb") as doc_file, open(thumb_path, "rb") as thumb_file:
                 await update.message.reply_document(
@@ -210,7 +208,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     filename=safe_filename,
                     caption=caption,
                     thumbnail=thumb_file,
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    read_timeout=120,
+                    write_timeout=120
                 )
         else:
             with open(file_path, "rb") as doc_file:
@@ -218,10 +218,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     document=doc_file,
                     filename=safe_filename,
                     caption=caption,
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    read_timeout=120,
+                    write_timeout=120
                 )
 
-        await status_msg.delete()
+        # Status message delete karein jab upload complete ho jaye
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
 
     except Exception as e:
         await status_msg.edit_text(f"❌ Error aaya: {e}")
@@ -243,8 +249,16 @@ async def main():
     # Start health check server for Render free tier
     await start_web_server()
 
-    # Create telegram application
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Network timeouts: 120s limit taaki badi PDF par timeout na aaye
+    request_config = HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=60.0,
+        read_timeout=120.0,
+        write_timeout=120.0
+    )
+
+    # Create telegram application with custom timeouts
+    application = Application.builder().token(BOT_TOKEN).request(request_config).build()
 
     # Handlers register karein
     application.add_handler(CommandHandler(["start", "help"], start_command))
@@ -260,7 +274,6 @@ async def main():
     async with application:
         await application.start()
         await application.updater.start_polling()
-        # Keep running
         while True:
             await asyncio.sleep(3600)
 
